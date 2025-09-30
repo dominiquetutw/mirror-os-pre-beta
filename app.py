@@ -1,86 +1,110 @@
+# === Mirror OS Pre-Beta Script v4 ===
+# This script runs a simple Flask web server that listens for user messages,
+# parses them for budget numbers and deadlines, detects changes (drift)
+# from previously seen values, and logs these events to Airtable.
+
+# --- Core Libraries ---
 import os
 import re
 import json
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify
+
+# --- Third-Party Libraries ---
 import requests
-from dateutil.parser import parse as parse_date
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-import pytz # --- CHANGED v2 ---: 引入 pytz 函式庫來處理時區
-import dateparser # --- CHANGED v3 ---: 引入新的日期解析函式庫
+import pytz 
+import dateparser 
 
-# --- 1. 設定與初始化 ---
+# --- Global Constants & Configuration ---
+STATE_FILE = "state.json" # The file used for the script's memory
 
-# 載入 .env 文件中的環境變數
+# Load environment variables from the .env file
 load_dotenv()
 
-# 初始化 Flask App
+# Initialize the Flask web application
 app = Flask(__name__)
 
-# 從環境變數讀取 Airtable 配置
+# --- Airtable Configuration ---
+# Read credentials and settings from environment variables
 AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
 AIRTABLE_BASE_ID = os.getenv("AIRTABLE_BASE_ID")
 AIRTABLE_TABLE_NAME = os.getenv("AIRTABLE_TABLE_NAME")
-API_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN") # --- CHANGED v2 ---: 讀取 API 安全金鑰
+API_SECRET_TOKEN = os.getenv("API_SECRET_TOKEN") # The "Door Key" for our server
 AIRTABLE_API_URL = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
 
-# In-memory storage
+# --- In-Memory State ---
+# This dictionary holds the last known values for budgets and dates for each session.
+# It is loaded from STATE_FILE at startup.
 STATE_STORAGE = {}
 
-# --- 2. 核心功能函式 ---
+# ==============================================================================
+# === HELPER FUNCTIONS =========================================================
+# ==============================================================================
 
-# --- CHANGED v2 ---: 更新了 Regex，使其更具彈性
+def save_state_to_file():
+    """Saves the current STATE_STORAGE dictionary to a JSON file."""
+    with open(STATE_FILE, 'w') as f:
+        json.dump(STATE_STORAGE, f, indent=2)
+    print(f"🧠 State saved to {STATE_FILE}")
+
+def load_state_from_file():
+    """Loads the state from a JSON file into STATE_STORAGE if the file exists."""
+    global STATE_STORAGE
+    try:
+        with open(STATE_FILE, 'r') as f:
+            STATE_STORAGE = json.load(f)
+            print(f"🧠 State successfully loaded from {STATE_FILE}")
+    except FileNotFoundError:
+        print(f"🧠 {STATE_FILE} not found. Starting with a fresh state.")
+    except json.JSONDecodeError:
+        print(f"🧠 Error reading {STATE_FILE}. Starting with a fresh state.")
+
 def extract_financial_number(text: str) -> float | None:
-    """從文字中提取第一個數字（處理貨幣符號、千分位、小數點）"""
-    # 修正後的 Regex：確保匹配的字串必須以數字開頭
+    """Extracts the first number from text, handling commas and decimals."""
+    # This regex ensures the match starts with a digit.
     match = re.search(r'(\d[\d,]*\.?\d*)', text)
     if match:
-        # 移除逗號並轉換為浮點數以支援小數
         numeric_string = match.group(1).replace(',', '')
         if numeric_string:
             return float(numeric_string)
     return None
 
 def extract_and_format_date(text: str) -> str | None:
-    """從文字中智能提取日期（包括相對日期如 "tomorrow"）並格式化為 YYYY-MM-DD"""
-    # dateparser 會自動在句子中尋找它能理解的日期，不需要 regex
-    # settings={'PREFER_DATES_FROM': 'future'} 確保 "next Monday" 會找到未來的星期一
+    """Intelligently extracts a date from text, including relative dates."""
+    # dateparser finds dates like "tomorrow" or "next Monday".
+    # PREFER_DATES_FROM: 'future' helps resolve ambiguities (e.g., ensures "Monday" is next Monday).
     parsed_date = dateparser.parse(text, settings={'PREFER_DATES_FROM': 'future'})
     if parsed_date:
         return parsed_date.strftime('%Y-%m-%d')
     return None
 
 def create_ledger_event(session_id, turn_id, rule_id, severity, note) -> dict:
-    """建立標準格式的 Ledger Event 物件"""
+    """Builds a standardized Ledger Event dictionary."""
     now_utc = datetime.now(timezone.utc)
-    
-    # --- CHANGED v2 ---: 使用毫秒級 timestamp 避免碰撞
-    event_id = f"{rule_id}-{turn_id}-{int(now_utc.timestamp() * 1000)}"
-    
-    # --- CHANGED v2 ---: 新增 Asia/Taipei 本地時間
     taipei_tz = pytz.timezone('Asia/Taipei')
     now_taipei = now_utc.astimezone(taipei_tz)
 
     event = {
-        "event_id": event_id,
+        "event_id": f"{rule_id}-{turn_id}-{int(now_utc.timestamp() * 1000)}",
         "session_id": session_id,
         "turn_id": int(turn_id),
         "rule_id": rule_id,
         "severity": severity,
         "note": note,
-        "created_at": now_utc.isoformat(), # UTC 時間
-        "created_at_local": now_taipei.isoformat() # 台北時區時間
+        "created_at": now_utc.isoformat(),
+        "created_at_local": now_taipei.isoformat()
     }
     return event
 
 def log_to_airtable(event_data: dict):
-    """將 Event 寫入 Airtable"""
+    """Sends the event data to the Airtable API."""
     if not all([AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME]):
         print("💡 Airtable env variables not set. Skipping Airtable log.")
         return
 
     headers = {
-        "Authorization": f"Bearer {AIRTABLE_API_KEY}",
+        "Authorization": f"Bearer {AIRTABLE_API_KEY}", # Uses the "Vault Key"
         "Content-Type": "application/json"
     }
     payload = json.dumps({"records": [{"fields": event_data}]})
@@ -94,20 +118,23 @@ def log_to_airtable(event_data: dict):
         if 'response' in locals():
             print(f"   Response Body: {response.text}")
 
-# --- 3. API 端點 (Endpoint) ---
+# ==============================================================================
+# === MAIN API ENDPOINT ========================================================
+# ==============================================================================
 
-# --- CHANGED v2 ---: 新增 before_request 來做 Token 驗證
 @app.before_request
 def verify_token():
-    """在每個請求前驗證 API Token"""
-    if API_SECRET_TOKEN: # 只有在 .env 中設定了 TOKEN 才啟用驗證
+    """A security check that runs before every request."""
+    # This function acts as the "Front Door" security guard.
+    if API_SECRET_TOKEN:
         auth_header = request.headers.get('X-API-Token')
         if auth_header != API_SECRET_TOKEN:
+            # If the "Door Key" is wrong, reject the request immediately.
             return jsonify({"error": "Unauthorized: Invalid API Token"}), 401
 
 @app.route('/process', methods=['POST'])
 def process_message():
-    """接收使用者訊息，進行解析、比對並生成事件"""
+    """Receives user messages, processes them, and returns ledger events."""
     data = request.json
     session_id = data.get("session_id")
     turn_id = data.get("turn_id")
@@ -121,7 +148,7 @@ def process_message():
 
     events = []
     
-    # --- 處理數字 (Budget) ---
+    # --- Process Numbers (Budget) ---
     extracted_num = extract_financial_number(message_text)
     if extracted_num is not None:
         rule_id = "NUM-001"
@@ -138,10 +165,11 @@ def process_message():
             note = f"Budget confirmed at {extracted_num}, no drift."
             
         STATE_STORAGE[session_id][rule_id] = extracted_num
+        save_state_to_file() # Save memory to file after updating
         event = create_ledger_event(session_id, turn_id, rule_id, severity, note)
         events.append(event)
 
-    # --- 處理日期 (Deadline) ---
+    # --- Process Dates (Deadline) ---
     extracted_date = extract_and_format_date(message_text)
     if extracted_date is not None:
         rule_id = "DATE-001"
@@ -158,22 +186,28 @@ def process_message():
             note = f"Deadline confirmed at {extracted_date}, no drift."
         
         STATE_STORAGE[session_id][rule_id] = extracted_date
+        save_state_to_file() # Save memory to file after updating
         event = create_ledger_event(session_id, turn_id, rule_id, severity, note)
         events.append(event)
 
-    # --- 處理與輸出事件 ---
+    # --- Return all generated events for this turn ---
     if not events:
         return jsonify({"message": "No trackable data (number/date) found in message."})
 
     for event in events:
-        print("\n--- 💎 Ledger Event Generated (v2) ---")
+        print("\n--- 💎 Ledger Event Generated ---")
         print(json.dumps(event, indent=2))
-        print("-------------------------------------\n")
+        print("--------------------------------\n")
         log_to_airtable(event)
         
     return jsonify(events)
 
-# --- 4. 啟動伺服器 ---
+# ==============================================================================
+# === SCRIPT STARTUP ===========================================================
+# ==============================================================================
 
 if __name__ == '__main__':
+    # Load the state from the JSON file when the server starts
+    load_state_from_file() 
+    # Run the Flask application
     app.run(debug=True, port=5001)
