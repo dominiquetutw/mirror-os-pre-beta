@@ -1,5 +1,33 @@
 {
   "demo-002": {
     "NUM-001": 550000.0
+  },
+  "test-relative-date": {},
+  "test-both": {
+    "NUM-001": 350000.0
+  },
+  "test-date-only": {
+    "DATE-001": "2025-12-31"
+  },
+  "test-date-fixed": {
+    "DATE-001A": "2025-12-31"
+  },
+  "final-test": {
+    "NUM-001": 500000.0
+  },
+  "v6.1-test": {
+    "NUM-001": 500000.0,
+    "DATE-001": "2025-10-15"
+  },
+  "final-v6.1-test": {
+    "NUM-001": 600000.0,
+    "DATE-001A": "2025-12-20"
+  },
+  "baseline-test": {
+    "NUM-001": 800000.0
+  },
+  "combined-test": {
+    "NUM-001": 500000.0,
+    "DATE-001A": "2025-11-15"
   }
 }
