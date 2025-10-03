@@ -78,6 +78,10 @@ def validate_session_id(sid: str) -> bool:
 @app.before_request
 def verify_token():
     """Only check API Token on PROTECTED_PATHS; supports Bearer or X-API-Token"""
+    # Skip token check for OPTIONS (CORS preflight)
+    if request.method == 'OPTIONS':
+        return
+    
     if request.path not in PROTECTED_PATHS:
         return
 

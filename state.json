@@ -29,5 +29,21 @@
   "combined-test": {
     "NUM-001": 500000.0,
     "DATE-001A": "2025-11-15"
+  },
+  "retry-test": {
+    "NUM-001": 999000.0
+  },
+  "status-test": {
+    "STATUS-001": "paused"
+  },
+  "all-rules-test": {
+    "NUM-001": 450000.0,
+    "DATE-001A": "2025-12-15",
+    "STATUS-001": "blocked"
+  },
+  "demo-session": {
+    "NUM-001": 550000.0,
+    "DATE-001A": "2025-11-30",
+    "STATUS-001": "blocked"
   }
 }
